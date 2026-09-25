@@ -10,6 +10,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import de.readeckapp.domain.model.AutoSyncTimeframe
 import de.readeckapp.domain.model.DefaultFilter
 import de.readeckapp.domain.model.Theme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,7 +70,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     override suspend fun saveLastBookmarkTimestamp(timestamp: Instant) {
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putString(KEY_LAST_BOOKMARK_TIMESTAMP.name, timestamp.toString())
         }
     }
@@ -80,7 +82,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     override suspend fun saveLastSyncTimestamp(timestamp: Instant) {
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putString(KEY_LAST_SYNC_TIMESTAMP.name, timestamp.toString())
         }
     }
@@ -92,7 +94,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     override suspend fun setInitialSyncPerformed(performed: Boolean) {
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putBoolean(KEY_INITIAL_SYNC_PERFORMED, performed)
         }
     }
@@ -106,7 +108,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     override suspend fun setAutoSyncEnabled(isEnabled: Boolean) {
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putBoolean(KEY_AUTOSYNC_ENABLED.name, isEnabled)
         }
     }
@@ -119,7 +121,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
 
     override suspend fun saveAutoSyncTimeframe(autoSyncTimeframe: AutoSyncTimeframe) {
         Timber.d("saveAutoSyncTimeframe")
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putString(KEY_AUTOSYNC_TIMEFRAME.name, autoSyncTimeframe.name)
         }
     }
@@ -131,7 +133,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     override suspend fun saveTheme(theme: Theme) {
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putString(KEY_THEME.name, theme.name)
         }
     }
@@ -141,7 +143,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     override suspend fun saveZoomFactor(zoomFactor: Int) {
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putInt(KEY_ZOOM_FACTOR.name, zoomFactor.coerceIn(25, 400))
         }
     }
@@ -151,7 +153,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     override suspend fun setSyncReadProgressEnabled(enabled: Boolean) {
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putBoolean(KEY_SYNC_READ_PROGRESS.name, enabled)
         }
     }
@@ -161,7 +163,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     override suspend fun setScrollToProgressEnabled(enabled: Boolean) {
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putBoolean(KEY_SCROLL_TO_PROGRESS.name, enabled)
         }
     }
@@ -173,7 +175,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     override suspend fun saveDefaultFilter(defaultFilter: DefaultFilter) {
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putString(KEY_DEFAULT_FILTER.name, defaultFilter.name)
         }
     }
@@ -217,7 +219,7 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
         authState: String
     ) {
         Timber.d("saveCredentials")
-        encryptedSharedPreferences.edit {
+        encryptedSharedPreferences.edit(commit = true) {
             putString(KEY_URL.name, url)
             putString(KEY_USERNAME.name, username)
             putString(KEY_AUTH_STATE.name, authState)
@@ -226,24 +228,23 @@ class SettingsDataStoreImpl @Inject constructor(@ApplicationContext private val 
     }
 
     private fun getStringFlow(key: String, defaultValue: String? = null): StateFlow<String?> =
-        preferenceFlow(key) { encryptedSharedPreferences.getString(key, defaultValue) }
+        preferenceFlow(key, defaultValue) { encryptedSharedPreferences.getString(key, defaultValue) }
 
     private fun getIntFlow(key: String, defaultValue: Int = 100): StateFlow<Int> =
-        preferenceFlow(key) { encryptedSharedPreferences.getInt(key, defaultValue) }
+        preferenceFlow(key, defaultValue) { encryptedSharedPreferences.getInt(key, defaultValue) }
 
-    private fun <T> preferenceFlow(key: String, getValue: () -> T): StateFlow<T> { // Create our flow using callbackflow
-        // Emit initial value when we start collecting from this flow (if it exists) or use default one from params in function call above!  This is important so consumers know initial state!  Can skip this and just send updates if you do not need initial state emission on subscribe time!  That could be fine too depending on your use case - remember that!  Also you can send null as the "initial" value as well if you want!
-        val state = MutableStateFlow(getValue())
+    private fun <T> preferenceFlow(key: String, defaultValue: T, getValue: () -> T): StateFlow<T> {
+        val state = MutableStateFlow(defaultValue)
 
-        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
-            if (changedKey == key) {  // Only send updates for this specific key
-                Timber.d("pref changed key=$key")
-                val value = getValue()
-                state.value = value
-            }
+        // Read the actual value asynchronously to avoid blocking construction
+        // and to ensure EncryptedSharedPreferences is fully initialized
+        CoroutineScope(Dispatchers.IO).launch {
+            state.value = getValue()
         }
 
-        encryptedSharedPreferences.registerOnSharedPreferenceChangeListener(listener) // Register the listener
+        // Note: EncryptedSharedPreferences encrypts keys, so OnSharedPreferenceChangeListener
+        // receives encrypted key names. We cannot reliably match them to original keys.
+        // Real-time updates are handled by ViewModels manually calling getX() after saveX().
         return state.asStateFlow()
     }
 }
